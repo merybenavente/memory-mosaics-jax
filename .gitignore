@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.bin
+data/
+results/
+reference_impl/
+*.pdf
+.DS_Store
