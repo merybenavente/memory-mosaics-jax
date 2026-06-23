@@ -136,11 +136,14 @@ def train(cfg: Config, model_type: str):
     n_params = sum(p.size for p in jax.tree.leaves(params))
     print(f"Model: {model_type} | n_layer={cfg.n_layer} | {n_params:,} parameters")
 
-    # optimizer: AdamW
+    # optimizer: AdamW with cosine LR schedule
+    def lr_schedule(step):
+        return cosine_lr(step, cfg)
+
     optimizer = optax.chain(
         optax.clip_by_global_norm(cfg.grad_clip),
         optax.adamw(
-            learning_rate=1.0,  # we'll scale manually via schedule
+            learning_rate=lr_schedule,
             b1=cfg.beta1,
             b2=cfg.beta2,
             weight_decay=cfg.weight_decay,
@@ -172,22 +175,18 @@ def train(cfg: Config, model_type: str):
             with open(os.path.join(out_dir, "log.json"), "w") as f:
                 json.dump(log, f, indent=2)
 
-        # --- learning rate ---
-        lr = cosine_lr(step, cfg)
-
         # --- train step ---
         rng, step_rng, batch_rng = jax.random.split(rng, 3)
         x, y = get_batch(cfg, train_data, batch_rng)
         loss, grads = train_step(params, opt_state, x, y, step_rng)
 
-        # manual LR scaling: multiply grads by lr before optimizer
         updates, opt_state = optimizer.update(grads, opt_state, params)
-        updates = jax.tree.map(lambda u: u * lr, updates)
         params = optax.apply_updates(params, updates)
 
         if step % cfg.log_interval == 0:
             dt = time.time() - t0
             t0 = time.time()
+            lr = cosine_lr(step, cfg)
             print(f"  step {step:>6d} | loss {float(loss):.4f} | lr {lr:.2e} | {dt:.1f}s")
 
     print("Training complete.")
