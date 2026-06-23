@@ -1,6 +1,7 @@
 """Shared configuration for GPT-2 and Memory Mosaic experiments."""
 
 from dataclasses import dataclass
+import jax
 
 
 @dataclass
@@ -46,3 +47,8 @@ class Config:
     @property
     def head_dim(self) -> int:
         return self.n_embd // self.n_head
+
+
+# Register Config as a JAX static type so it can live inside param pytrees
+# without being traversed by jax.tree operations (grad, optimizer, etc.)
+jax.tree_util.register_static(Config)

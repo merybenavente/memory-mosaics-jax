@@ -137,16 +137,35 @@ def train(cfg: Config, model_type: str):
     print(f"Model: {model_type} | n_layer={cfg.n_layer} | {n_params:,} parameters")
 
     # optimizer: AdamW with cosine LR schedule
+    # Weight decay only on 2D+ weight matrices (not layer norms, scalar scales, etc.)
+    # This matches the reference: leave_out = x.dim() < 2 or x.shape[-2:] == (1,1)
     def lr_schedule(step):
         return cosine_lr(step, cfg)
 
+    def _should_decay(x):
+        """True for 2D+ weight matrices, False for scalars/1D params."""
+        return hasattr(x, 'ndim') and x.ndim >= 2
+
+    decay_mask = jax.tree.map(_should_decay, params)
+
     optimizer = optax.chain(
         optax.clip_by_global_norm(cfg.grad_clip),
-        optax.adamw(
-            learning_rate=lr_schedule,
-            b1=cfg.beta1,
-            b2=cfg.beta2,
-            weight_decay=cfg.weight_decay,
+        optax.masked(
+            optax.adamw(
+                learning_rate=lr_schedule,
+                b1=cfg.beta1,
+                b2=cfg.beta2,
+                weight_decay=cfg.weight_decay,
+            ),
+            decay_mask,
+        ),
+        optax.masked(
+            optax.adam(
+                learning_rate=lr_schedule,
+                b1=cfg.beta1,
+                b2=cfg.beta2,
+            ),
+            jax.tree.map(lambda x: not x, decay_mask),
         ),
     )
     opt_state = optimizer.init(params)

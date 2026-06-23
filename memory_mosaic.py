@@ -52,10 +52,14 @@ def leaky_average(k: jnp.ndarray, leaky_beta: jnp.ndarray, T: int) -> jnp.ndarra
     beta = jnp.abs(leaky_beta) * EXP_SCALING  # (H,)
 
     # Build coefficient matrix: coef[t, s] = exp(-beta * (t - s)) for s <= t
+    # We must mask *before* exp to avoid inf from negative distances
     idx = jnp.arange(T)
-    distances = idx[:, None] - idx[None, :]         # (T, T), distances[t,s] = t - s
-    coef = jnp.exp(-beta[:, None, None] * distances)  # (H, T, T)
-    coef = coef * jnp.tril(jnp.ones((T, T)))          # zero out future positions
+    distances = idx[:, None] - idx[None, :]           # (T, T), distances[t,s] = t - s
+    log_coef = -beta[:, None, None] * distances        # (H, T, T)
+    # Zero out future positions in log-space (set to -inf so exp gives 0)
+    tril_mask = jnp.tril(jnp.ones((T, T)))
+    log_coef = jnp.where(tril_mask, log_coef, -jnp.inf)
+    coef = jnp.exp(log_coef)                          # (H, T, T)
 
     # Apply: (H, T, T) @ (B, H, T, D) -> (B, H, T, D)
     return jnp.einsum("hts,bhsd->bhtd", coef, k)
@@ -95,7 +99,7 @@ def key_features(
     k = k / (jnp.linalg.norm(k, axis=-1, keepdims=True) + 1e-10)
 
     # scale: exp(scale_pow * key_scale * EXP_SCALING), clamped
-    log_scale = scale_pow * EXP_SCALING * jnp.abs(params["key_scale"])  # (H,)
+    log_scale = scale_pow * EXP_SCALING * params["key_scale"]  # (H,)
     log_scale = jnp.minimum(log_scale, KEY_SCALE_MAX)
     k = k * jnp.exp(log_scale)[None, :, None, None]
 
@@ -137,9 +141,6 @@ def val_features(
     v = (1 - coef) * v_shifted + coef * v
 
     # transpose back: (B, H, D, T) -> (B, H, T, D)
-    v = jnp.transpose(v, (0, 2, 3, 1))  # wait, need (B, H, T, D)
-
-    # actually: (B, H, D, T) -> (B, H, T, D)
     v = jnp.transpose(v, (0, 1, 3, 2))
 
     # normalize
@@ -181,10 +182,12 @@ def contextual_memory(
     # causal attention with diagonal excluded (strictly lower triangular)
     # keys are used as both queries and keys (eq. 7)
     # query at position t uses k[t], attends to k[0..t-1]
-    attn = jnp.einsum("bhtd,bhsd->bhts", k, k)  # (B, H, T, T), scale=1 (already scaled)
+    # Position 0 has no history — output is zero (as in the reference impl)
+    q = k[:, :, 1:]  # queries from position 1 onward: (B, H, T-1, D)
+    attn = jnp.einsum("bhtd,bhsd->bhts", q, k)  # (B, H, T-1, T), scale=1 (already scaled)
 
-    # strictly lower triangular mask (diagonal=-1): position t sees 0..t-1
-    mask = jnp.tril(jnp.ones((T, T)), k=-1)
+    # strictly lower triangular mask: query at position t (1-indexed) sees 0..t-1
+    mask = jnp.tril(jnp.ones((T - 1, T)), k=-1)
     attn = jnp.where(mask[None, None, :, :], attn, jnp.finfo(attn.dtype).min)
     attn = jax.nn.softmax(attn, axis=-1)
 
@@ -194,8 +197,12 @@ def contextual_memory(
         keep = jax.random.bernoulli(drop_rng, 1.0 - cfg.dropout, attn.shape)
         attn = jnp.where(keep, attn / (1.0 - cfg.dropout), 0.0)
 
-    # weighted sum: (B, H, T, S) @ (B, H, S, D) -> (B, H, T, D)
-    out = jnp.einsum("bhts,bhsd->bhtd", attn, v)
+    # weighted sum: (B, H, T-1, T) @ (B, H, T, D) -> (B, H, T-1, D)
+    out_rest = jnp.einsum("bhts,bhsd->bhtd", attn, v)
+
+    # prepend zeros for position 0
+    zeros = jnp.zeros((B, cfg.n_head, 1, cfg.head_dim))
+    out = jnp.concatenate([zeros, out_rest], axis=2)  # (B, H, T, D)
 
     # reshape: (B, H, T, D) -> (B, T, H, D)
     out = jnp.transpose(out, (0, 2, 1, 3))
