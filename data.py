@@ -6,8 +6,8 @@ tokenizes with GPT-2 BPE (tiktoken), and serves random batches as JAX arrays.
 
 import os
 import json
-import urllib.request
-import zipfile
+import subprocess
+import shutil
 
 import numpy as np
 import jax
@@ -16,26 +16,42 @@ import tiktoken
 
 from config import Config
 
-# --- URLs for BabiStories from the official repo ---
-_REPO_RAW = (
-    "https://raw.githubusercontent.com/facebookresearch/MemoryMosaics/main"
-    "/Library/memory_mosaics/data/BabiStories"
-)
-_DATA_URLS = {
-    "train": f"{_REPO_RAW}/traindataset.txt",
-    "val": f"{_REPO_RAW}/valdataset.txt",
-}
+# --- BabiStories is distributed as split 7z archives in the official repo ---
+_REPO_URL = "https://github.com/facebookresearch/MemoryMosaics.git"
+_7Z_DIR = "BabiStories/data"
 
 
 def _download_if_needed(data_dir: str) -> None:
-    """Download raw BabiStories text files if not already present."""
+    """Download and extract BabiStories text files if not already present."""
     os.makedirs(data_dir, exist_ok=True)
-    for split, url in _DATA_URLS.items():
-        path = os.path.join(data_dir, f"{split}dataset.txt")
-        if not os.path.exists(path):
-            print(f"Downloading {split} split → {path} ...")
-            urllib.request.urlretrieve(url, path)
-            print(f"  done ({os.path.getsize(path) / 1e6:.1f} MB)")
+    train_path = os.path.join(data_dir, "traindataset.txt")
+    val_path = os.path.join(data_dir, "valdataset.txt")
+    if os.path.exists(train_path) and os.path.exists(val_path):
+        return
+
+    print("Downloading BabiStories from the official repo ...")
+    clone_dir = os.path.join(data_dir, "_repo_clone")
+
+    # sparse-checkout: only fetch the 7z archives
+    subprocess.run(
+        ["git", "clone", "--filter=blob:none", "--sparse", "--depth=1",
+         _REPO_URL, clone_dir],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", clone_dir, "sparse-checkout", "set", _7Z_DIR],
+        check=True,
+    )
+
+    # extract the multi-part 7z archive
+    archive = os.path.join(clone_dir, _7Z_DIR, "babistories-dataset.7z.001")
+    print("Extracting 7z archive ...")
+    subprocess.run(["7z", "x", archive, f"-o{data_dir}", "-y"], check=True)
+
+    # clean up clone
+    shutil.rmtree(clone_dir)
+    print(f"  traindataset.txt: {os.path.getsize(train_path) / 1e6:.1f} MB")
+    print(f"  valdataset.txt:   {os.path.getsize(val_path) / 1e6:.1f} MB")
 
 
 def _tokenize_if_needed(data_dir: str) -> None:
