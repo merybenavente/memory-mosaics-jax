@@ -1,4 +1,4 @@
-# Memory Mosaics — JAX
+# Memory Mosaics
 
 JAX reimplementation of [Memory Mosaics](https://arxiv.org/abs/2405.06394v3) (Zhang et al., ICLR 2025), along with a GPT-2 baseline.
 
