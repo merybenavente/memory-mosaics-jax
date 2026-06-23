@@ -1,0 +1,21 @@
+[project]
+name = "memory-mosaics-jax"
+version = "0.1.0"
+description = "JAX implementation of Memory Mosaics (arXiv:2405.06394)"
+authors = [
+    {name = "María Benavente"}
+]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "jax (>=0.10.2,<0.11.0)",
+    "jaxlib (>=0.10.2,<0.11.0)",
+    "optax (>=0.2.8,<0.3.0)",
+    "tiktoken (>=0.13.0,<0.14.0)",
+    "numpy (>=2.5.0,<3.0.0)",
+    "matplotlib (>=3.11.0,<4.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
