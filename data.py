@@ -55,25 +55,38 @@ def _download_if_needed(data_dir: str) -> None:
 
 
 def _tokenize_if_needed(data_dir: str) -> None:
-    """Tokenize raw text → .bin memmap files (uint16), one per split."""
+    """Tokenize raw text → .bin memmap files (uint16), one per split.
+
+    Streams line-by-line to a temporary file to avoid loading everything
+    into memory at once (the train set is ~1.8 GB / ~475M tokens).
+    """
     enc = tiktoken.get_encoding("gpt2")
     for split in ("train", "val"):
         bin_path = os.path.join(data_dir, f"{split}.bin")
         if os.path.exists(bin_path):
             continue
         txt_path = os.path.join(data_dir, f"{split}dataset.txt")
+        tmp_path = bin_path + ".tmp"
         print(f"Tokenizing {txt_path} ...")
+
+        # first pass: count tokens to know the memmap size
+        n_tokens = 0
         with open(txt_path, "r") as f:
-            lines = f.readlines()
-        ids: list[int] = []
-        for line in lines:
-            ids.extend(enc.encode_ordinary(json.loads(line)))
-            ids.append(enc.eot_token)
-        arr = np.array(ids, dtype=np.uint16)
-        mm = np.memmap(bin_path, dtype=np.uint16, mode="w+", shape=arr.shape)
-        mm[:] = arr
+            for line in f:
+                n_tokens += len(enc.encode_ordinary(json.loads(line))) + 1  # +1 for eot
+
+        # second pass: write tokens directly into memmap
+        mm = np.memmap(tmp_path, dtype=np.uint16, mode="w+", shape=(n_tokens,))
+        offset = 0
+        with open(txt_path, "r") as f:
+            for line in f:
+                tokens = enc.encode_ordinary(json.loads(line))
+                tokens.append(enc.eot_token)
+                mm[offset : offset + len(tokens)] = np.array(tokens, dtype=np.uint16)
+                offset += len(tokens)
         mm.flush()
-        print(f"  {split}: {len(arr):,} tokens → {bin_path}")
+        os.rename(tmp_path, bin_path)
+        print(f"  {split}: {n_tokens:,} tokens → {bin_path}")
 
 
 def prepare_data(cfg: Config) -> None:
